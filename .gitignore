@@ -3,3 +3,4 @@ dist/
 .tmp/
 .vite.stdout.log
 .vite.stderr.log
+.secrets/

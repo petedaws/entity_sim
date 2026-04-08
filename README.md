@@ -19,12 +19,17 @@ This skeleton is intentionally split into two layers:
 The current implementation uses:
 
 - Ping-pong entity buffers on the GPU
-- A compute shader that updates every entity each frame
-- A sampled interaction model: each entity checks a small random subset of peers each step
+- A 3-pass compute pipeline: clear grid, bin entities, simulate local neighborhoods
+- A uniform-grid broadphase with fixed-capacity cell buckets
+- Broadphase cell sizing that is derived from the largest force radius, but is finer than the force radius itself
 - Instanced rendering from the same GPU entity buffer
-- A live control panel to adjust damping, radius, speed, noise, and interaction rules
+- A live control panel to adjust attraction radius, repulsion radius, speed, noise, and interaction rules
 
-That is not the final large-`N` architecture, but it is a useful bridge because it teaches the important pieces first:
+This is a real grid broadphase already, but it is still an intermediate architecture because it uses fixed-capacity per-cell buckets instead of a prefix-sum scatter stage.
+
+The important detail is that `attractionRadius` and `repulsionRadius` are now treated as physical interaction cutoffs, not as the grid cell size. The shader computes how many neighboring cells to scan from the actual cell size each frame.
+
+It still teaches the important pieces first:
 
 - GPU buffer layout
 - compute passes
@@ -55,7 +60,7 @@ More detail is in [docs/architecture.md](/c:/Users/peted/Documents/dev/entity_si
 - [src/shaders/sim.wgsl](/c:/Users/peted/Documents/dev/entity_sim/src/shaders/sim.wgsl): compute shader
 - [src/shaders/render.wgsl](/c:/Users/peted/Documents/dev/entity_sim/src/shaders/render.wgsl): render shader
 - [src/sim/config.ts](/c:/Users/peted/Documents/dev/entity_sim/src/sim/config.ts): core sim constants and tweakable defaults
-- [src/sim/rules.ts](/c:/Users/peted/Documents/dev/entity_sim/src/sim/rules.ts): interaction rule matrix helpers
+- [src/sim/rules.ts](/c:/Users/peted/Documents/dev/entity_sim/src/sim/rules.ts): attraction/repulsion rule helpers
 
 ## Dependencies
 
@@ -90,7 +95,7 @@ On Windows PowerShell, `npm.ps1` may be blocked by execution policy. This repo i
 
 ## Next Milestones
 
-1. Replace sampled neighbors with a uniform-grid broadphase.
+1. Replace fixed-capacity cell buckets with a prefix-sum scatter stage.
 2. Add lifecycle rules: spawn, decay, type switching, and death.
 3. Introduce field textures for food, heat, or pheromones.
 4. Add GPU-side profiling and entity count scaling tests.

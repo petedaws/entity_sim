@@ -8,34 +8,74 @@ import {
   type SimulationControls,
   WORKGROUP_SIZE
 } from "./config";
-import { createDefaultRuleMatrix, createRandomRuleMatrix } from "./rules";
+import {
+  createDefaultRuleMatrices,
+  createRandomRuleMatrices
+} from "./rules";
 
-const SIM_SETTINGS_SIZE = 48;
-const RENDER_SETTINGS_SIZE = 16;
+const SIM_SETTINGS_SIZE = 112;
+const RENDER_SETTINGS_SIZE = 32;
+const MIN_CELL_CAPACITY = 64;
+const CELL_CAPACITY_MULTIPLIER = 6;
+const TARGET_CELLS_PER_SEARCH_RADIUS = 2;
 
 type BufferPair<T> = [T, T];
 
+interface Vector2 {
+  x: number;
+  y: number;
+}
+
+interface GridSpec {
+  columns: number;
+  rows: number;
+  cellCount: number;
+  cellCapacity: number;
+}
+
 export class EntitySimulation {
   readonly controls: SimulationControls = { ...DEFAULT_CONTROLS };
-  readonly entityCount = ENTITY_COUNT;
+  readonly maxEntityCount = ENTITY_COUNT;
   readonly typeCount = TYPE_COUNT;
 
   private readonly device: GPUDevice;
   private readonly context: GPUCanvasContext;
   private readonly format: GPUTextureFormat;
-  private readonly computePipeline: GPUComputePipeline;
+  private readonly clearGridPipeline: GPUComputePipeline;
+  private readonly binGridPipeline: GPUComputePipeline;
+  private readonly simulatePipeline: GPUComputePipeline;
   private readonly renderPipeline: GPURenderPipeline;
   private readonly entityBuffers: BufferPair<GPUBuffer>;
-  private readonly simulationBindGroups: BufferPair<GPUBindGroup>;
+  private simulationBindGroups!: BufferPair<GPUBindGroup>;
+  private binGridBindGroups!: BufferPair<GPUBindGroup>;
+  private clearGridBindGroup!: GPUBindGroup;
   private readonly renderBindGroups: BufferPair<GPUBindGroup>;
   private readonly simSettingsBuffer: GPUBuffer;
   private readonly renderSettingsBuffer: GPUBuffer;
-  private readonly ruleBuffer: GPUBuffer;
+  private readonly attractionBuffer: GPUBuffer;
+  private readonly repulsionBuffer: GPUBuffer;
+  private gridCountsBuffer!: GPUBuffer;
+  private gridEntriesBuffer!: GPUBuffer;
+  private attractionMatrix: Float32Array;
+  private repulsionMatrix: Float32Array;
+  private readonly typeEnabled = new Uint32Array(TYPE_COUNT).fill(1);
 
   private activeBufferIndex: 0 | 1 = 0;
+  private activeEntityCount = ENTITY_COUNT;
   private frameIndex = 0;
   private worldHalfWidth = 1;
   private worldHalfHeight = 1;
+  private gridColumns = 1;
+  private gridRows = 1;
+  private gridCellCount = 1;
+  private gridCellCapacity = MIN_CELL_CAPACITY;
+  private gridCellWidth = 2;
+  private gridCellHeight = 2;
+  private searchSpanX = 1;
+  private searchSpanY = 1;
+  private dragActive = false;
+  private dragPosition: Vector2 = { x: 0, y: 0 };
+  private dragDelta: Vector2 = { x: 0, y: 0 };
 
   constructor(
     device: GPUDevice,
@@ -58,11 +98,21 @@ export class EntitySimulation {
       usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST
     });
 
-    this.ruleBuffer = device.createBuffer({
-      label: "rule matrix",
+    this.attractionBuffer = device.createBuffer({
+      label: "attraction matrix",
       size: TYPE_COUNT * TYPE_COUNT * Float32Array.BYTES_PER_ELEMENT,
       usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST
     });
+
+    this.repulsionBuffer = device.createBuffer({
+      label: "repulsion matrix",
+      size: TYPE_COUNT * TYPE_COUNT * Float32Array.BYTES_PER_ELEMENT,
+      usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST
+    });
+
+    const defaultRules = createDefaultRuleMatrices(TYPE_COUNT);
+    this.attractionMatrix = defaultRules.attraction;
+    this.repulsionMatrix = defaultRules.repulsion;
 
     this.entityBuffers = [
       this.createEntityBuffer("entities a"),
@@ -72,9 +122,9 @@ export class EntitySimulation {
     const initialEntities = this.buildInitialEntities();
     device.queue.writeBuffer(this.entityBuffers[0], 0, initialEntities);
     device.queue.writeBuffer(this.entityBuffers[1], 0, initialEntities);
-    device.queue.writeBuffer(this.ruleBuffer, 0, createDefaultRuleMatrix(TYPE_COUNT));
+    this.writeRuleBuffers();
 
-    const computeModule = device.createShaderModule({
+    const simModule = device.createShaderModule({
       label: "simulation shader",
       code: simShaderSource
     });
@@ -84,12 +134,30 @@ export class EntitySimulation {
       code: renderShaderSource
     });
 
-    this.computePipeline = device.createComputePipeline({
-      label: "simulation pipeline",
+    this.clearGridPipeline = device.createComputePipeline({
+      label: "clear grid pipeline",
       layout: "auto",
       compute: {
-        module: computeModule,
-        entryPoint: "main"
+        module: simModule,
+        entryPoint: "clearGrid"
+      }
+    });
+
+    this.binGridPipeline = device.createComputePipeline({
+      label: "bin grid pipeline",
+      layout: "auto",
+      compute: {
+        module: simModule,
+        entryPoint: "binGrid"
+      }
+    });
+
+    this.simulatePipeline = device.createComputePipeline({
+      label: "simulate grid pipeline",
+      layout: "auto",
+      compute: {
+        module: simModule,
+        entryPoint: "simulateGrid"
       }
     });
 
@@ -114,29 +182,6 @@ export class EntitySimulation {
       }
     });
 
-    this.simulationBindGroups = [
-      device.createBindGroup({
-        label: "simulate a->b",
-        layout: this.computePipeline.getBindGroupLayout(0),
-        entries: [
-          { binding: 0, resource: { buffer: this.simSettingsBuffer } },
-          { binding: 1, resource: { buffer: this.entityBuffers[0] } },
-          { binding: 2, resource: { buffer: this.entityBuffers[1] } },
-          { binding: 3, resource: { buffer: this.ruleBuffer } }
-        ]
-      }),
-      device.createBindGroup({
-        label: "simulate b->a",
-        layout: this.computePipeline.getBindGroupLayout(0),
-        entries: [
-          { binding: 0, resource: { buffer: this.simSettingsBuffer } },
-          { binding: 1, resource: { buffer: this.entityBuffers[1] } },
-          { binding: 2, resource: { buffer: this.entityBuffers[0] } },
-          { binding: 3, resource: { buffer: this.ruleBuffer } }
-        ]
-      })
-    ];
-
     this.renderBindGroups = [
       device.createBindGroup({
         label: "render a",
@@ -156,10 +201,34 @@ export class EntitySimulation {
       })
     ];
 
+    this.rebuildGridResources();
     this.writeRenderSettings();
   }
 
+  get gridSummary(): string {
+    return `${this.gridColumns}x${this.gridRows} grid`;
+  }
+
+  get entityCount(): number {
+    return this.activeEntityCount;
+  }
+
+  get cellCapacity(): number {
+    return this.gridCellCapacity;
+  }
+
+  get gridCellSummary(): string {
+    const cellSize = Math.max(this.gridCellWidth, this.gridCellHeight);
+    return `${cellSize.toFixed(3)} cell`;
+  }
+
+  get searchSummary(): string {
+    return `${this.searchSpanX * 2 + 1}x${this.searchSpanY * 2 + 1} search`;
+  }
+
   resize(width: number, height: number): void {
+    this.syncControlState();
+
     const aspect = height === 0 ? 1 : width / height;
     this.worldHalfWidth = aspect;
     this.worldHalfHeight = 1;
@@ -170,30 +239,59 @@ export class EntitySimulation {
       alphaMode: "opaque"
     });
 
+    this.ensureGridResources();
     this.writeRenderSettings();
   }
 
   step(deltaSeconds: number): void {
+    this.syncControlState();
+    this.ensureGridResources();
+
     const scaledDt = deltaSeconds * this.controls.timeScale;
+    const shouldDispatchSimulation =
+      !this.controls.paused || this.hasPendingDragMotion();
     const encoder = this.device.createCommandEncoder({
       label: "frame encoder"
     });
 
-    if (!this.controls.paused) {
-      this.writeSimSettings(scaledDt);
+    if (shouldDispatchSimulation) {
+      this.writeSimSettings(this.controls.paused ? 0 : scaledDt);
 
-      const computePass = encoder.beginComputePass({
+      const clearPass = encoder.beginComputePass({
+        label: "clear grid"
+      });
+      clearPass.setPipeline(this.clearGridPipeline);
+      clearPass.setBindGroup(0, this.clearGridBindGroup);
+      clearPass.dispatchWorkgroups(
+        Math.ceil(this.gridCellCount / WORKGROUP_SIZE)
+      );
+      clearPass.end();
+
+      const binPass = encoder.beginComputePass({
+        label: "bin entities"
+      });
+      binPass.setPipeline(this.binGridPipeline);
+      binPass.setBindGroup(0, this.binGridBindGroups[this.activeBufferIndex]);
+      binPass.dispatchWorkgroups(
+        Math.ceil(this.activeEntityCount / WORKGROUP_SIZE)
+      );
+      binPass.end();
+
+      const simulatePass = encoder.beginComputePass({
         label: "simulate"
       });
-      computePass.setPipeline(this.computePipeline);
-      computePass.setBindGroup(0, this.simulationBindGroups[this.activeBufferIndex]);
-      computePass.dispatchWorkgroups(
-        Math.ceil(this.entityCount / WORKGROUP_SIZE)
+      simulatePass.setPipeline(this.simulatePipeline);
+      simulatePass.setBindGroup(0, this.simulationBindGroups[this.activeBufferIndex]);
+      simulatePass.dispatchWorkgroups(
+        Math.ceil(this.activeEntityCount / WORKGROUP_SIZE)
       );
-      computePass.end();
+      simulatePass.end();
 
       this.activeBufferIndex = this.activeBufferIndex === 0 ? 1 : 0;
-      this.frameIndex += 1;
+      if (!this.controls.paused) {
+        this.frameIndex += 1;
+      }
+      this.consumeDragMotion();
     }
 
     this.writeRenderSettings();
@@ -202,11 +300,87 @@ export class EntitySimulation {
   }
 
   randomizeRules(): void {
-    this.device.queue.writeBuffer(
-      this.ruleBuffer,
+    const nextRules = createRandomRuleMatrices(this.typeCount);
+    this.attractionMatrix = nextRules.attraction;
+    this.repulsionMatrix = nextRules.repulsion;
+    this.writeRuleBuffers();
+  }
+
+  resetRules(): void {
+    const nextRules = createDefaultRuleMatrices(this.typeCount);
+    this.attractionMatrix = nextRules.attraction;
+    this.repulsionMatrix = nextRules.repulsion;
+    this.writeRuleBuffers();
+  }
+
+  getAttractionValue(sourceType: number, targetType: number): number {
+    return this.attractionMatrix[this.getRuleIndex(sourceType, targetType)];
+  }
+
+  getRepulsionValue(sourceType: number, targetType: number): number {
+    return this.repulsionMatrix[this.getRuleIndex(sourceType, targetType)];
+  }
+
+  isTypeEnabled(typeIndex: number): boolean {
+    return this.typeEnabled[typeIndex] !== 0;
+  }
+
+  setAttractionValue(
+    sourceType: number,
+    targetType: number,
+    value: number
+  ): void {
+    this.attractionMatrix[this.getRuleIndex(sourceType, targetType)] = value;
+    this.device.queue.writeBuffer(this.attractionBuffer, 0, this.attractionMatrix);
+  }
+
+  setRepulsionValue(
+    sourceType: number,
+    targetType: number,
+    value: number
+  ): void {
+    this.repulsionMatrix[this.getRuleIndex(sourceType, targetType)] = Math.max(
       0,
-      createRandomRuleMatrix(this.typeCount)
+      value
     );
+    this.device.queue.writeBuffer(this.repulsionBuffer, 0, this.repulsionMatrix);
+  }
+
+  setTypeEnabled(typeIndex: number, enabled: boolean): void {
+    this.typeEnabled[typeIndex] = enabled ? 1 : 0;
+  }
+
+  viewportToWorld(u: number, v: number): Vector2 {
+    const clampedU = Math.min(Math.max(u, 0), 1);
+    const clampedV = Math.min(Math.max(v, 0), 1);
+
+    return {
+      x: (clampedU * 2 - 1) * this.worldHalfWidth,
+      y: (1 - clampedV * 2) * this.worldHalfHeight
+    };
+  }
+
+  beginDrag(position: Vector2): void {
+    this.dragActive = true;
+    this.dragPosition = position;
+    this.dragDelta = { x: 0, y: 0 };
+  }
+
+  updateDrag(position: Vector2): void {
+    if (!this.dragActive) {
+      return;
+    }
+
+    this.dragDelta = {
+      x: this.dragDelta.x + (position.x - this.dragPosition.x),
+      y: this.dragDelta.y + (position.y - this.dragPosition.y)
+    };
+    this.dragPosition = position;
+  }
+
+  endDrag(): void {
+    this.dragActive = false;
+    this.dragDelta = { x: 0, y: 0 };
   }
 
   resetEntities(): void {
@@ -220,17 +394,20 @@ export class EntitySimulation {
   private createEntityBuffer(label: string): GPUBuffer {
     return this.device.createBuffer({
       label,
-      size: this.entityCount * ENTITY_STRIDE_FLOATS * Float32Array.BYTES_PER_ELEMENT,
+      size:
+        this.maxEntityCount *
+        ENTITY_STRIDE_FLOATS *
+        Float32Array.BYTES_PER_ELEMENT,
       usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST
     });
   }
 
   private buildInitialEntities(): Float32Array {
-    const values = new Float32Array(this.entityCount * ENTITY_STRIDE_FLOATS);
+    const values = new Float32Array(this.maxEntityCount * ENTITY_STRIDE_FLOATS);
     const spawnHalfWidth = this.worldHalfWidth * 0.88;
     const spawnHalfHeight = this.worldHalfHeight * 0.88;
 
-    for (let index = 0; index < this.entityCount; index += 1) {
+    for (let index = 0; index < this.maxEntityCount; index += 1) {
       const base = index * ENTITY_STRIDE_FLOATS;
       const type = index % this.typeCount;
       const radius = Math.sqrt(Math.random());
@@ -253,34 +430,60 @@ export class EntitySimulation {
   private writeSimSettings(deltaSeconds: number): void {
     const buffer = new ArrayBuffer(SIM_SETTINGS_SIZE);
     const counts = new Uint32Array(buffer, 0, 4);
-    const scalars0 = new Float32Array(buffer, 16, 4);
-    const scalars1 = new Float32Array(buffer, 32, 4);
+    const grid = new Uint32Array(buffer, 16, 4);
+    const scalars0 = new Float32Array(buffer, 32, 4);
+    const scalars1 = new Float32Array(buffer, 48, 4);
+    const scalars2 = new Float32Array(buffer, 64, 4);
+    const drag = new Float32Array(buffer, 80, 4);
+    const enabled = new Uint32Array(buffer, 96, 4);
 
-    counts[0] = this.entityCount;
+    counts[0] = this.activeEntityCount;
     counts[1] = this.typeCount;
-    counts[2] = this.controls.sampleCount;
-    counts[3] = this.frameIndex;
+    counts[2] = this.gridColumns;
+    counts[3] = this.gridRows;
+
+    grid[0] = this.gridCellCount;
+    grid[1] = this.gridCellCapacity;
+    grid[2] = this.frameIndex;
+    grid[3] = this.hasPendingDragMotion() ? 1 : 0;
 
     scalars0[0] = deltaSeconds;
     scalars0[1] = this.controls.interactionRadius;
-    scalars0[2] = this.controls.maxSpeed;
-    scalars0[3] = this.controls.damping;
+    scalars0[2] = this.controls.repulsionRadius;
+    scalars0[3] = this.controls.maxSpeed;
 
-    scalars1[0] = this.controls.noiseStrength;
-    scalars1[1] = this.controls.boundaryForce;
-    scalars1[2] = this.worldHalfWidth;
-    scalars1[3] = this.worldHalfHeight;
+    scalars1[0] = this.controls.damping;
+    scalars1[1] = this.controls.noiseStrength;
+    scalars1[2] = this.controls.boundaryForce;
+    scalars1[3] = this.worldHalfWidth;
+
+    scalars2[0] = this.worldHalfHeight;
+    scalars2[1] = this.controls.dragRadius;
+    scalars2[2] = 0;
+    scalars2[3] = 0;
+
+    drag[0] = this.dragPosition.x;
+    drag[1] = this.dragPosition.y;
+    drag[2] = this.dragDelta.x;
+    drag[3] = this.dragDelta.y;
+
+    enabled.set(this.typeEnabled);
 
     this.device.queue.writeBuffer(this.simSettingsBuffer, 0, buffer);
   }
 
   private writeRenderSettings(): void {
-    const buffer = new Float32Array([
-      this.worldHalfWidth,
-      this.worldHalfHeight,
-      this.controls.entityRadius,
-      0
-    ]);
+    const buffer = new ArrayBuffer(RENDER_SETTINGS_SIZE);
+    const scalars = new Float32Array(buffer, 0, 4);
+    const enabled = new Uint32Array(buffer, 16, 4);
+
+    scalars[0] = this.worldHalfWidth;
+    scalars[1] = this.worldHalfHeight;
+    scalars[2] = this.controls.entityRadius;
+    scalars[3] = 0;
+
+    enabled.set(this.typeEnabled);
+
     this.device.queue.writeBuffer(this.renderSettingsBuffer, 0, buffer);
   }
 
@@ -301,7 +504,201 @@ export class EntitySimulation {
 
     renderPass.setPipeline(this.renderPipeline);
     renderPass.setBindGroup(0, this.renderBindGroups[this.activeBufferIndex]);
-    renderPass.draw(6, this.entityCount);
+    renderPass.draw(6, this.activeEntityCount);
     renderPass.end();
+  }
+
+  private ensureGridResources(): void {
+    const nextGrid = this.computeGridSpec();
+    if (
+      nextGrid.columns === this.gridColumns &&
+      nextGrid.rows === this.gridRows &&
+      nextGrid.cellCapacity === this.gridCellCapacity
+    ) {
+      return;
+    }
+
+    this.rebuildGridResources(nextGrid);
+  }
+
+  private computeGridSpec(): GridSpec {
+    const searchRadius = Math.max(
+      this.controls.interactionRadius,
+      this.controls.repulsionRadius,
+      0.001
+    );
+    const targetCellSize = searchRadius / TARGET_CELLS_PER_SEARCH_RADIUS;
+    const worldWidth = this.worldHalfWidth * 2;
+    const worldHeight = this.worldHalfHeight * 2;
+    const columns = Math.max(1, Math.ceil(worldWidth / targetCellSize));
+    const rows = Math.max(1, Math.ceil(worldHeight / targetCellSize));
+    const cellCount = columns * rows;
+    const averageOccupancy = this.activeEntityCount / cellCount;
+    const cellCapacity = Math.max(
+      MIN_CELL_CAPACITY,
+      Math.ceil(averageOccupancy * CELL_CAPACITY_MULTIPLIER)
+    );
+
+    return {
+      columns,
+      rows,
+      cellCount,
+      cellCapacity
+    };
+  }
+
+  private rebuildGridResources(gridSpec = this.computeGridSpec()): void {
+    const retiredBuffers: GPUBuffer[] = [];
+    if (this.gridCountsBuffer) {
+      retiredBuffers.push(this.gridCountsBuffer);
+    }
+    if (this.gridEntriesBuffer) {
+      retiredBuffers.push(this.gridEntriesBuffer);
+    }
+
+    this.gridColumns = gridSpec.columns;
+    this.gridRows = gridSpec.rows;
+    this.gridCellCount = gridSpec.cellCount;
+    this.gridCellCapacity = gridSpec.cellCapacity;
+    this.gridCellWidth = (this.worldHalfWidth * 2) / this.gridColumns;
+    this.gridCellHeight = (this.worldHalfHeight * 2) / this.gridRows;
+    const searchRadius = Math.max(
+      this.controls.interactionRadius,
+      this.controls.repulsionRadius,
+      0.001
+    );
+    this.searchSpanX = Math.max(1, Math.ceil(searchRadius / this.gridCellWidth));
+    this.searchSpanY = Math.max(1, Math.ceil(searchRadius / this.gridCellHeight));
+
+    this.gridCountsBuffer = this.device.createBuffer({
+      label: "grid counts",
+      size: this.gridCellCount * Uint32Array.BYTES_PER_ELEMENT,
+      usage: GPUBufferUsage.STORAGE
+    });
+
+    this.gridEntriesBuffer = this.device.createBuffer({
+      label: "grid entries",
+      size:
+        this.gridCellCount *
+        this.gridCellCapacity *
+        Uint32Array.BYTES_PER_ELEMENT,
+      usage: GPUBufferUsage.STORAGE
+    });
+
+    this.clearGridBindGroup = this.device.createBindGroup({
+      label: "clear grid",
+      layout: this.clearGridPipeline.getBindGroupLayout(0),
+      entries: [
+        { binding: 0, resource: { buffer: this.simSettingsBuffer } },
+        { binding: 4, resource: { buffer: this.gridCountsBuffer } }
+      ]
+    });
+
+    this.binGridBindGroups = [
+      this.device.createBindGroup({
+        label: "bin a",
+        layout: this.binGridPipeline.getBindGroupLayout(0),
+        entries: [
+          { binding: 0, resource: { buffer: this.simSettingsBuffer } },
+          { binding: 1, resource: { buffer: this.entityBuffers[0] } },
+          { binding: 4, resource: { buffer: this.gridCountsBuffer } },
+          { binding: 5, resource: { buffer: this.gridEntriesBuffer } }
+        ]
+      }),
+      this.device.createBindGroup({
+        label: "bin b",
+        layout: this.binGridPipeline.getBindGroupLayout(0),
+        entries: [
+          { binding: 0, resource: { buffer: this.simSettingsBuffer } },
+          { binding: 1, resource: { buffer: this.entityBuffers[1] } },
+          { binding: 4, resource: { buffer: this.gridCountsBuffer } },
+          { binding: 5, resource: { buffer: this.gridEntriesBuffer } }
+        ]
+      })
+    ];
+
+    this.simulationBindGroups = [
+      this.device.createBindGroup({
+        label: "simulate a->b",
+        layout: this.simulatePipeline.getBindGroupLayout(0),
+        entries: [
+          { binding: 0, resource: { buffer: this.simSettingsBuffer } },
+          { binding: 1, resource: { buffer: this.entityBuffers[0] } },
+          { binding: 2, resource: { buffer: this.entityBuffers[1] } },
+          { binding: 3, resource: { buffer: this.attractionBuffer } },
+          { binding: 4, resource: { buffer: this.gridCountsBuffer } },
+          { binding: 5, resource: { buffer: this.gridEntriesBuffer } },
+          { binding: 6, resource: { buffer: this.repulsionBuffer } }
+        ]
+      }),
+      this.device.createBindGroup({
+        label: "simulate b->a",
+        layout: this.simulatePipeline.getBindGroupLayout(0),
+        entries: [
+          { binding: 0, resource: { buffer: this.simSettingsBuffer } },
+          { binding: 1, resource: { buffer: this.entityBuffers[1] } },
+          { binding: 2, resource: { buffer: this.entityBuffers[0] } },
+          { binding: 3, resource: { buffer: this.attractionBuffer } },
+          { binding: 4, resource: { buffer: this.gridCountsBuffer } },
+          { binding: 5, resource: { buffer: this.gridEntriesBuffer } },
+          { binding: 6, resource: { buffer: this.repulsionBuffer } }
+        ]
+      })
+    ];
+
+    this.retireBuffers(retiredBuffers);
+  }
+
+  private retireBuffers(buffers: GPUBuffer[]): void {
+    if (buffers.length === 0) {
+      return;
+    }
+
+    void this.device.queue
+      .onSubmittedWorkDone()
+      .then(() => {
+        for (const buffer of buffers) {
+          buffer.destroy();
+        }
+      })
+      .catch(() => {
+        for (const buffer of buffers) {
+          buffer.destroy();
+        }
+      });
+  }
+
+  private getRuleIndex(sourceType: number, targetType: number): number {
+    return sourceType * this.typeCount + targetType;
+  }
+
+  private syncControlState(): void {
+    const nextEntityCount = Math.min(
+      this.maxEntityCount,
+      Math.max(1, Math.round(this.controls.entityCount))
+    );
+
+    if (this.activeEntityCount !== nextEntityCount) {
+      this.activeEntityCount = nextEntityCount;
+    }
+
+    this.controls.entityCount = nextEntityCount;
+  }
+
+  private hasPendingDragMotion(): boolean {
+    return (
+      this.dragActive &&
+      (Math.abs(this.dragDelta.x) > 0.000001 ||
+        Math.abs(this.dragDelta.y) > 0.000001)
+    );
+  }
+
+  private consumeDragMotion(): void {
+    this.dragDelta = { x: 0, y: 0 };
+  }
+
+  private writeRuleBuffers(): void {
+    this.device.queue.writeBuffer(this.attractionBuffer, 0, this.attractionMatrix);
+    this.device.queue.writeBuffer(this.repulsionBuffer, 0, this.repulsionMatrix);
   }
 }

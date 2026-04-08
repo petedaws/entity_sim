@@ -7,6 +7,7 @@ struct RenderSettings {
   world_half_extent: vec2f,
   entity_radius: f32,
   _padding: f32,
+  enabled: vec4u,
 };
 
 struct VertexOutput {
@@ -34,20 +35,46 @@ const TYPE_COLORS = array<vec3f, 4>(
   vec3f(0.48, 0.90, 0.58)
 );
 
+fn is_type_enabled(type_index: u32) -> bool {
+  switch type_index {
+    case 0u: {
+      return settings.enabled.x != 0u;
+    }
+    case 1u: {
+      return settings.enabled.y != 0u;
+    }
+    case 2u: {
+      return settings.enabled.z != 0u;
+    }
+    default: {
+      return settings.enabled.w != 0u;
+    }
+  }
+}
+
 @vertex
 fn vsMain(
   @builtin(vertex_index) vertex_index: u32,
   @builtin(instance_index) instance_index: u32
 ) -> VertexOutput {
   let entity = entities[instance_index];
+  let type_index = u32(entity.position_type.w) % 4u;
   let local_uv = QUAD_VERTICES[vertex_index];
+
+  var output: VertexOutput;
+  if (!is_type_enabled(type_index)) {
+    output.position = vec4f(-2.0, -2.0, 0.0, 1.0);
+    output.local_uv = vec2f(0.0);
+    output.entity_type = entity.position_type.w;
+    return output;
+  }
+
   let radius = vec2f(
     settings.entity_radius / settings.world_half_extent.x,
     settings.entity_radius / settings.world_half_extent.y
   );
   let clip_position = entity.position_type.xy / settings.world_half_extent + local_uv * radius;
 
-  var output: VertexOutput;
   output.position = vec4f(clip_position, 0.0, 1.0);
   output.local_uv = local_uv;
   output.entity_type = entity.position_type.w;

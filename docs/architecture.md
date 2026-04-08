@@ -4,7 +4,7 @@
 
 Simulate a large number of simple entities whose local rules produce interesting large-scale behavior, while keeping the simulation almost entirely on the GPU.
 
-## Why This Skeleton Starts Simple
+## Why This Version Still Counts As A Skeleton
 
 The hard part of this project is not rendering points. It is designing the data flow so that:
 
@@ -13,28 +13,38 @@ The hard part of this project is not rendering points. It is designing the data 
 - neighbor lookups do not become `O(N^2)`
 - CPU involvement is limited to parameter updates and UI
 
-The current starter keeps the data-flow shape correct without solving the full neighbor-search problem immediately.
+The current version solves neighbor search with a practical uniform grid, but it still stops short of the most scalable variant because it uses fixed-capacity cell buckets instead of a prefix-sum scatter pass.
 
 ## Current Starter Pipeline
 
 Each frame:
 
 1. Write a small settings buffer from CPU.
-2. Run one compute pass over every entity.
-3. Swap input/output entity buffers.
-4. Render instances directly from the updated entity buffer.
+2. Clear per-cell counts.
+3. Bin every entity into a uniform grid cell.
+4. Simulate each entity by scanning as many neighboring cells as needed to cover the active force radii.
+5. Swap input/output entity buffers.
+6. Render instances directly from the updated entity buffer.
 
-The compute pass uses "sampled neighbors":
+The current grid stage uses fixed-capacity buckets:
 
-- each entity checks a fixed number of pseudo-random peers
-- force strength comes from a type-vs-type rule matrix
-- distance limits, drag, noise, and boundary forces keep it stable
+- each cell owns a contiguous slice of an index buffer
+- atomic counters assign entity slots within that cell
+- if a cell exceeds capacity, extra occupants are ignored for that frame
 
-This is still `O(N * k)` instead of `O(N^2)`, where `k` is a small fixed sample count.
+That makes the implementation much simpler than a full prefix-sum scatter stage while still giving you a true local broadphase.
+
+One subtle but important design point:
+
+- attraction and repulsion radii are physical force cutoffs
+- grid cell size is a separate broadphase detail
+- the shader derives the required neighbor-cell span from `radius / cell_size`
+
+That decoupling keeps the force controls meaningful while still letting the grid do its job.
 
 ## Large-N Target Pipeline
 
-For a serious large-entity sim, use a spatial partitioning stage on the GPU.
+For a more robust large-entity sim, keep the spatial partitioning stage on the GPU but replace fixed-capacity buckets with a sorted scatter pipeline.
 
 Recommended pass sequence:
 
@@ -42,7 +52,7 @@ Recommended pass sequence:
 2. Bin every entity into a cell.
 3. Prefix-sum cell counts into offsets.
 4. Scatter entity indices into a contiguous cell-index buffer.
-5. Simulate each entity by scanning only the 3x3 local neighborhood of cells.
+5. Simulate each entity by scanning as many neighboring cells as needed for the chosen search radius.
 6. Render from the latest entity buffer.
 
 ## Data Model
@@ -56,17 +66,17 @@ Entity buffer:
 
 Rule buffer:
 
-- flattened `typeCount x typeCount` matrix
-- positive values attract
-- negative values repel
+- attraction matrix using inverse-square strength
+- repulsion matrix using spring-style strength
 
 Small uniform buffer:
 
 - dt
-- interaction radius
+- attraction radius
+- repulsion radius
 - damping
 - max speed
-- sample count or grid dimensions
+- grid dimensions and cell capacity
 - world bounds
 - frame index
 
@@ -84,12 +94,12 @@ You do not need a tree structure until the world gets sparse or highly non-unifo
 
 Phase 1:
 
-- current sampled-neighbor GPU starter
+- current fixed-capacity grid broadphase
 - tune parameters until clusters, streams, and segregation appear
 
 Phase 2:
 
-- GPU uniform grid broadphase
+- prefix-sum scatter within the grid
 - increase entity counts substantially
 - add type-specific radii and stronger local rules
 

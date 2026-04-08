@@ -1,26 +1,45 @@
-export function createDefaultRuleMatrix(typeCount: number): Float32Array {
-  if (typeCount !== 4) {
-    return createRandomRuleMatrix(typeCount);
-  }
-
-  return new Float32Array([
-    0.45, -0.28, 0.18, -0.12,
-    -0.24, 0.38, -0.26, 0.16,
-    0.16, -0.22, 0.42, -0.34,
-    -0.14, 0.2, -0.32, 0.48
-  ]);
+export interface RuleMatrices {
+  attraction: Float32Array;
+  repulsion: Float32Array;
 }
 
-export function createRandomRuleMatrix(typeCount: number): Float32Array {
-  const values = new Float32Array(typeCount * typeCount);
+export function createDefaultRuleMatrices(typeCount: number): RuleMatrices {
+  if (typeCount !== 4) {
+    return createRandomRuleMatrices(typeCount);
+  }
+
+  return {
+    attraction: new Float32Array([
+      0.00022, 0.00006, 0.00014, 0.00003,
+      0.00008, 0.00020, 0.00005, 0.00013,
+      0.00012, 0.00004, 0.00021, 0.00009,
+      0.00005, 0.00011, 0.00007, 0.00023
+    ]),
+    repulsion: new Float32Array([
+      320, 110, 180, 90,
+      120, 300, 95, 170,
+      150, 85, 310, 140,
+      100, 160, 115, 330
+    ])
+  };
+}
+
+export function createRandomRuleMatrices(typeCount: number): RuleMatrices {
+  const attraction = new Float32Array(typeCount * typeCount);
+  const repulsion = new Float32Array(typeCount * typeCount);
 
   for (let row = 0; row < typeCount; row += 1) {
     for (let column = 0; column < typeCount; column += 1) {
       const index = row * typeCount + column;
-      const base = Math.random() * 0.9 - 0.45;
-      values[index] = row === column ? base + 0.25 : base;
+      const isSelf = row === column;
+
+      attraction[index] =
+        (isSelf ? 0.00012 : 0) +
+        (Math.random() * 2 - 1) * (isSelf ? 0.00012 : 0.0003);
+      repulsion[index] =
+        (isSelf ? 180 : 50) + Math.random() * (isSelf ? 220 : 260);
     }
   }
 
-  return values;
+  return { attraction, repulsion };
 }

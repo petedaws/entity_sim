@@ -4,8 +4,17 @@ import { getEntityTypeMetadata } from "../sim/typeMetadata";
 const ATTRACTION_MIN = -0.001;
 const ATTRACTION_MAX = 0.001;
 const ATTRACTION_STEP = 0.000002;
-const REPULSION_MAX = 2000;
-const REPULSION_STEP = 1;
+const REPULSION_MAX = 5;
+const REPULSION_STEP = 0.01;
+const TYPE_ATTRACTION_RADIUS_MIN = 0.02;
+const TYPE_ATTRACTION_RADIUS_MAX = 0.35;
+const TYPE_ATTRACTION_RADIUS_STEP = 0.005;
+const TYPE_REPULSION_RADIUS_MIN = 0.004;
+const TYPE_REPULSION_RADIUS_MAX = 0.16;
+const TYPE_REPULSION_RADIUS_STEP = 0.001;
+const TYPE_MAX_SPEED_MIN = 0.05;
+const TYPE_MAX_SPEED_MAX = 2;
+const TYPE_MAX_SPEED_STEP = 0.01;
 
 export interface RulePanelController {
   syncFromSimulation(): void;
@@ -29,7 +38,7 @@ export function createRulePanel(
   const help = document.createElement("p");
   help.className = "rule-panel__help";
   help.textContent =
-    "Attraction is a signed k / r^2 term inside the attraction radius, so negative values become inverse-square repulsion. Repulsion uses a spring term k * (repulsionRadius - distance) inside the repulsion radius. The active tab chooses the source color.";
+    "Each color has its own attraction radius, repulsion radius, and max speed. Attraction is signed k / r^2. Repulsion is proportional to 1 / r^6.";
 
   titleGroup.append(eyebrow, help);
 
@@ -76,13 +85,16 @@ export function createRulePanel(
   const rows = document.createElement("div");
   rows.className = "rule-panel__rows";
 
+  const typeSettings = document.createElement("div");
+  typeSettings.className = "rule-panel__type-settings";
+
   const legend = document.createElement("p");
   legend.className = "rule-panel__legend";
   legend.textContent =
     `Attraction: ${ATTRACTION_MIN.toFixed(4)} to ${ATTRACTION_MAX.toFixed(4)} | Repulsion: 0 to ${REPULSION_MAX.toFixed(1)}`;
 
   sectionHeader.append(sectionTitle, typeToggle);
-  body.append(sectionHeader, rows, legend);
+  body.append(sectionHeader, typeSettings, rows, legend);
   panel.append(header, tabs, body);
   document.body.append(panel);
 
@@ -143,6 +155,45 @@ export function createRulePanel(
     typeToggle.textContent = sourceEnabled
       ? `Turn Off ${sourceMetadata.name}`
       : `Turn On ${sourceMetadata.name}`;
+
+    typeSettings.replaceChildren(
+      createCompactControl({
+        label: "Attr Radius",
+        min: TYPE_ATTRACTION_RADIUS_MIN,
+        max: TYPE_ATTRACTION_RADIUS_MAX,
+        step: TYPE_ATTRACTION_RADIUS_STEP,
+        value: simulation.getTypeAttractionRadius(activeType),
+        accentColor: sourceMetadata.hex,
+        formatter: formatRadiusValue,
+        onInput: (nextValue) => {
+          simulation.setTypeAttractionRadius(activeType, nextValue);
+        }
+      }),
+      createCompactControl({
+        label: "Rep Radius",
+        min: TYPE_REPULSION_RADIUS_MIN,
+        max: TYPE_REPULSION_RADIUS_MAX,
+        step: TYPE_REPULSION_RADIUS_STEP,
+        value: simulation.getTypeRepulsionRadius(activeType),
+        accentColor: "#ff8f7c",
+        formatter: formatRadiusValue,
+        onInput: (nextValue) => {
+          simulation.setTypeRepulsionRadius(activeType, nextValue);
+        }
+      }),
+      createCompactControl({
+        label: "Max Speed",
+        min: TYPE_MAX_SPEED_MIN,
+        max: TYPE_MAX_SPEED_MAX,
+        step: TYPE_MAX_SPEED_STEP,
+        value: simulation.getTypeMaxSpeed(activeType),
+        accentColor: "#92b7ff",
+        formatter: formatSpeedValue,
+        onInput: (nextValue) => {
+          simulation.setTypeMaxSpeed(activeType, nextValue);
+        }
+      })
+    );
 
     rows.replaceChildren();
 
@@ -231,6 +282,8 @@ interface RuleChannelOptions {
   onInput: (value: number) => void;
 }
 
+interface CompactControlOptions extends RuleChannelOptions {}
+
 function createRuleChannel(options: RuleChannelOptions): HTMLDivElement {
   const channel = document.createElement("div");
   channel.className = "rule-panel__channel";
@@ -271,6 +324,46 @@ function createRuleChannel(options: RuleChannelOptions): HTMLDivElement {
   return channel;
 }
 
+function createCompactControl(options: CompactControlOptions): HTMLDivElement {
+  const control = document.createElement("div");
+  control.className = "rule-panel__compact";
+
+  const header = document.createElement("div");
+  header.className = "rule-panel__compact-header";
+
+  const label = document.createElement("span");
+  label.className = "rule-panel__channel-label";
+  label.textContent = options.label;
+
+  const value = document.createElement("output");
+  value.className = "rule-panel__compact-value";
+
+  const slider = document.createElement("input");
+  slider.className = "rule-panel__slider";
+  slider.type = "range";
+  slider.min = String(options.min);
+  slider.max = String(options.max);
+  slider.step = String(options.step);
+  slider.value = String(options.value);
+  slider.style.accentColor = options.accentColor;
+
+  const updateValue = (nextValue: number): void => {
+    value.textContent = options.formatter(nextValue);
+  };
+
+  updateValue(options.value);
+
+  slider.addEventListener("input", () => {
+    const nextValue = Number(slider.value);
+    options.onInput(nextValue);
+    updateValue(nextValue);
+  });
+
+  header.append(label, value);
+  control.append(header, slider);
+  return control;
+}
+
 function formatAttractionValue(value: number): string {
   if (value === 0) {
     return "0";
@@ -284,5 +377,13 @@ function formatAttractionValue(value: number): string {
 }
 
 function formatRepulsionValue(value: number): string {
-  return value.toFixed(0);
+  return value.toFixed(2);
+}
+
+function formatRadiusValue(value: number): string {
+  return value.toFixed(3);
+}
+
+function formatSpeedValue(value: number): string {
+  return value.toFixed(2);
 }

@@ -22,6 +22,7 @@ The current implementation uses:
 - A 3-pass compute pipeline: clear grid, bin entities, simulate local neighborhoods
 - A uniform-grid broadphase with fixed-capacity cell buckets
 - Broadphase cell sizing that is derived from the largest force radius, but is finer than the force radius itself
+- Toroidal wrapping instead of wall-boundary forces
 - Instanced rendering from the same GPU entity buffer
 - A live control panel to adjust attraction radius, repulsion radius, speed, noise, and interaction rules
 

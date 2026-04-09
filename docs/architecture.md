@@ -67,7 +67,7 @@ Entity buffer:
 Rule buffer:
 
 - attraction matrix using inverse-square strength
-- repulsion matrix using spring-style strength
+- repulsion matrix using inverse-sixth-power strength
 
 Small uniform buffer:
 

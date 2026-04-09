@@ -16,10 +16,10 @@ export function createDefaultRuleMatrices(typeCount: number): RuleMatrices {
       0.00005, 0.00011, 0.00007, 0.00023
     ]),
     repulsion: new Float32Array([
-      320, 110, 180, 90,
-      120, 300, 95, 170,
-      150, 85, 310, 140,
-      100, 160, 115, 330
+      0.80, 0.18, 0.36, 0.14,
+      0.22, 0.74, 0.16, 0.30,
+      0.28, 0.12, 0.78, 0.24,
+      0.16, 0.26, 0.18, 0.84
     ])
   };
 }
@@ -37,7 +37,7 @@ export function createRandomRuleMatrices(typeCount: number): RuleMatrices {
         (isSelf ? 0.00012 : 0) +
         (Math.random() * 2 - 1) * (isSelf ? 0.00012 : 0.0003);
       repulsion[index] =
-        (isSelf ? 180 : 50) + Math.random() * (isSelf ? 220 : 260);
+        (isSelf ? 0.35 : 0.08) + Math.random() * (isSelf ? 0.65 : 0.55);
     }
   }
 

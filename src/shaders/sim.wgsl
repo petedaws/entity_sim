@@ -8,9 +8,11 @@ struct SimSettings {
   grid: vec4u,
   scalars0: vec4f,
   scalars1: vec4f,
-  scalars2: vec4f,
   drag: vec4f,
   enabled: vec4u,
+  attraction_radii: vec4f,
+  repulsion_radii: vec4f,
+  max_speeds: vec4f,
 };
 
 @group(0) @binding(0) var<uniform> settings: SimSettings;
@@ -45,7 +47,7 @@ fn limit_length(vector: vec2f, max_length: f32) -> vec2f {
 }
 
 fn get_bounds() -> vec2f {
-  return vec2f(settings.scalars1.w, settings.scalars2.x);
+  return vec2f(settings.scalars0.w, settings.scalars1.x);
 }
 
 fn get_cell_extent() -> vec2f {
@@ -53,6 +55,31 @@ fn get_cell_extent() -> vec2f {
   let world_size = bounds * 2.0;
   let grid_size = vec2f(f32(settings.counts.z), f32(settings.counts.w));
   return world_size / grid_size;
+}
+
+fn wrap_position(position: vec2f, bounds: vec2f) -> vec2f {
+  let size = bounds * 2.0;
+  let shifted = position + bounds;
+  return shifted - floor(shifted / size) * size - bounds;
+}
+
+fn wrapped_delta(from_position: vec2f, to_position: vec2f, bounds: vec2f) -> vec2f {
+  let size = bounds * 2.0;
+  var delta = to_position - from_position;
+
+  if (delta.x > bounds.x) {
+    delta.x -= size.x;
+  } else if (delta.x < -bounds.x) {
+    delta.x += size.x;
+  }
+
+  if (delta.y > bounds.y) {
+    delta.y -= size.y;
+  } else if (delta.y < -bounds.y) {
+    delta.y += size.y;
+  }
+
+  return delta;
 }
 
 fn is_type_enabled(type_index: u32) -> bool {
@@ -72,11 +99,29 @@ fn is_type_enabled(type_index: u32) -> bool {
   }
 }
 
+fn get_type_scalar(values: vec4f, type_index: u32) -> f32 {
+  switch type_index {
+    case 0u: {
+      return values.x;
+    }
+    case 1u: {
+      return values.y;
+    }
+    case 2u: {
+      return values.z;
+    }
+    default: {
+      return values.w;
+    }
+  }
+}
+
 fn get_cell_coordinates(position: vec2f) -> vec2u {
   let bounds = get_bounds();
   let world_min = -bounds;
   let world_size = bounds * 2.0;
-  let scaled = (position - world_min) / world_size;
+  let wrapped = wrap_position(position, bounds);
+  let scaled = (wrapped - world_min) / world_size;
   let clamped = clamp(scaled, vec2f(0.0), vec2f(0.999999));
   let grid_size = vec2f(f32(settings.counts.z), f32(settings.counts.w));
   return vec2u(floor(clamped * grid_size));
@@ -136,38 +181,41 @@ fn simulateGrid(@builtin(global_invocation_id) global_id: vec3u) {
   let frame_index = settings.grid.z;
   let drag_active = settings.grid.w != 0u;
   let dt = settings.scalars0.x;
-  let interaction_radius = settings.scalars0.y;
-  let repulsion_radius = settings.scalars0.z;
-  let max_speed = settings.scalars0.w;
-  let damping = settings.scalars1.x;
-  let noise_strength = settings.scalars1.y;
-  let boundary_force = settings.scalars1.z;
-  let bounds = vec2f(settings.scalars1.w, settings.scalars2.x);
-  let drag_radius = settings.scalars2.y;
+  let damping = settings.scalars0.y;
+  let noise_strength = settings.scalars0.z;
+  let bounds = vec2f(settings.scalars0.w, settings.scalars1.x);
+  let drag_radius = settings.scalars1.y;
   let drag_position = settings.drag.xy;
   let drag_delta = settings.drag.zw;
   let drag_source = drag_position - drag_delta;
   let cell_extent = get_cell_extent();
-  let search_radius = max(interaction_radius, repulsion_radius);
-  let search_radius_sq = search_radius * search_radius;
-  let interaction_radius_sq = interaction_radius * interaction_radius;
-  let repulsion_radius_sq = repulsion_radius * repulsion_radius;
   let drag_radius_sq = drag_radius * drag_radius;
-  let search_range_x = i32(ceil(search_radius / cell_extent.x));
-  let search_range_y = i32(ceil(search_radius / cell_extent.y));
   let min_distance_sq = 0.0001;
 
   let entity = input_entities[index];
   let self_type = u32(entity.position_type.w);
   if (!is_type_enabled(self_type)) {
-    output_entities[index].position_type = entity.position_type;
+    output_entities[index].position_type = vec4f(
+      wrap_position(entity.position_type.xy, bounds),
+      0.0,
+      entity.position_type.w
+    );
     output_entities[index].velocity_seed = vec4f(0.0, 0.0, 0.0, entity.velocity_seed.w);
     return;
   }
 
-  var position = entity.position_type.xy;
+  var position = wrap_position(entity.position_type.xy, bounds);
   var velocity = entity.velocity_seed.xy;
   var acceleration = vec2f(0.0);
+  let interaction_radius = get_type_scalar(settings.attraction_radii, self_type);
+  let repulsion_radius = get_type_scalar(settings.repulsion_radii, self_type);
+  let max_speed = get_type_scalar(settings.max_speeds, self_type);
+  let search_radius = max(interaction_radius, repulsion_radius);
+  let search_radius_sq = search_radius * search_radius;
+  let interaction_radius_sq = interaction_radius * interaction_radius;
+  let repulsion_radius_sq = repulsion_radius * repulsion_radius;
+  let search_range_x = i32(ceil(search_radius / cell_extent.x));
+  let search_range_y = i32(ceil(search_radius / cell_extent.y));
   let cell = get_cell_coordinates(position);
 
   for (var offset_y = -search_range_y; offset_y <= search_range_y; offset_y += 1) {
@@ -194,7 +242,7 @@ fn simulateGrid(@builtin(global_invocation_id) global_id: vec3u) {
         }
 
         let other = input_entities[other_index];
-        let delta = other.position_type.xy - position;
+        let delta = wrapped_delta(position, other.position_type.xy, bounds);
         let distance_sq = dot(delta, delta);
 
         if (distance_sq < 0.000001 || distance_sq > search_radius_sq) {
@@ -218,22 +266,19 @@ fn simulateGrid(@builtin(global_invocation_id) global_id: vec3u) {
         }
 
         if (distance_sq <= repulsion_radius_sq) {
-          let compression = max(repulsion_radius - distance_value, 0.0);
-          let repulsion_force = repulsion_strength * compression;
+          let normalized_distance = max(distance_value / repulsion_radius, 0.2);
+          let repulsion_force =
+            repulsion_strength /
+            (normalized_distance *
+              normalized_distance *
+              normalized_distance *
+              normalized_distance *
+              normalized_distance *
+              normalized_distance);
           acceleration -= direction * repulsion_force;
         }
       }
     }
-  }
-
-  let overflow_x = abs(position.x) - bounds.x;
-  if (overflow_x > 0.0) {
-    acceleration.x -= sign(position.x) * overflow_x * boundary_force;
-  }
-
-  let overflow_y = abs(position.y) - bounds.y;
-  if (overflow_y > 0.0) {
-    acceleration.y -= sign(position.y) * overflow_y * boundary_force;
   }
 
   let noise_seed = index + frame_index * 1664525u;
@@ -247,13 +292,13 @@ fn simulateGrid(@builtin(global_invocation_id) global_id: vec3u) {
   velocity = limit_length(velocity, max_speed);
   position += velocity * dt;
   if (drag_active) {
-    let drag_offset = position - drag_source;
+    let drag_offset = wrapped_delta(drag_source, position, bounds);
     if (dot(drag_offset, drag_offset) <= drag_radius_sq) {
       position += drag_delta;
-      position = clamp(position, -bounds, bounds);
       velocity = vec2f(0.0);
     }
   }
+  position = wrap_position(position, bounds);
 
   output_entities[index].position_type = vec4f(position, 0.0, entity.position_type.w);
   output_entities[index].velocity_seed = vec4f(velocity, 0.0, entity.velocity_seed.w);

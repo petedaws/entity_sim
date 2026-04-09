@@ -1,6 +1,9 @@
 import renderShaderSource from "../shaders/render.wgsl?raw";
 import simShaderSource from "../shaders/sim.wgsl?raw";
 import {
+  DEFAULT_TYPE_ATTRACTION_RADIUS,
+  DEFAULT_TYPE_MAX_SPEED,
+  DEFAULT_TYPE_REPULSION_RADIUS,
   DEFAULT_CONTROLS,
   ENTITY_COUNT,
   ENTITY_STRIDE_FLOATS,
@@ -13,7 +16,7 @@ import {
   createRandomRuleMatrices
 } from "./rules";
 
-const SIM_SETTINGS_SIZE = 112;
+const SIM_SETTINGS_SIZE = 144;
 const RENDER_SETTINGS_SIZE = 32;
 const MIN_CELL_CAPACITY = 64;
 const CELL_CAPACITY_MULTIPLIER = 6;
@@ -59,6 +62,15 @@ export class EntitySimulation {
   private attractionMatrix: Float32Array;
   private repulsionMatrix: Float32Array;
   private readonly typeEnabled = new Uint32Array(TYPE_COUNT).fill(1);
+  private readonly typeAttractionRadii = new Float32Array(TYPE_COUNT).fill(
+    DEFAULT_TYPE_ATTRACTION_RADIUS
+  );
+  private readonly typeRepulsionRadii = new Float32Array(TYPE_COUNT).fill(
+    DEFAULT_TYPE_REPULSION_RADIUS
+  );
+  private readonly typeMaxSpeeds = new Float32Array(TYPE_COUNT).fill(
+    DEFAULT_TYPE_MAX_SPEED
+  );
 
   private activeBufferIndex: 0 | 1 = 0;
   private activeEntityCount = ENTITY_COUNT;
@@ -321,6 +333,18 @@ export class EntitySimulation {
     return this.repulsionMatrix[this.getRuleIndex(sourceType, targetType)];
   }
 
+  getTypeAttractionRadius(typeIndex: number): number {
+    return this.typeAttractionRadii[typeIndex];
+  }
+
+  getTypeRepulsionRadius(typeIndex: number): number {
+    return this.typeRepulsionRadii[typeIndex];
+  }
+
+  getTypeMaxSpeed(typeIndex: number): number {
+    return this.typeMaxSpeeds[typeIndex];
+  }
+
   isTypeEnabled(typeIndex: number): boolean {
     return this.typeEnabled[typeIndex] !== 0;
   }
@@ -348,6 +372,18 @@ export class EntitySimulation {
 
   setTypeEnabled(typeIndex: number, enabled: boolean): void {
     this.typeEnabled[typeIndex] = enabled ? 1 : 0;
+  }
+
+  setTypeAttractionRadius(typeIndex: number, value: number): void {
+    this.typeAttractionRadii[typeIndex] = Math.max(0, value);
+  }
+
+  setTypeRepulsionRadius(typeIndex: number, value: number): void {
+    this.typeRepulsionRadii[typeIndex] = Math.max(0, value);
+  }
+
+  setTypeMaxSpeed(typeIndex: number, value: number): void {
+    this.typeMaxSpeeds[typeIndex] = Math.max(0.01, value);
   }
 
   viewportToWorld(u: number, v: number): Vector2 {
@@ -433,9 +469,11 @@ export class EntitySimulation {
     const grid = new Uint32Array(buffer, 16, 4);
     const scalars0 = new Float32Array(buffer, 32, 4);
     const scalars1 = new Float32Array(buffer, 48, 4);
-    const scalars2 = new Float32Array(buffer, 64, 4);
-    const drag = new Float32Array(buffer, 80, 4);
-    const enabled = new Uint32Array(buffer, 96, 4);
+    const drag = new Float32Array(buffer, 64, 4);
+    const enabled = new Uint32Array(buffer, 80, 4);
+    const attractionRadii = new Float32Array(buffer, 96, 4);
+    const repulsionRadii = new Float32Array(buffer, 112, 4);
+    const maxSpeeds = new Float32Array(buffer, 128, 4);
 
     counts[0] = this.activeEntityCount;
     counts[1] = this.typeCount;
@@ -448,19 +486,14 @@ export class EntitySimulation {
     grid[3] = this.hasPendingDragMotion() ? 1 : 0;
 
     scalars0[0] = deltaSeconds;
-    scalars0[1] = this.controls.interactionRadius;
-    scalars0[2] = this.controls.repulsionRadius;
-    scalars0[3] = this.controls.maxSpeed;
+    scalars0[1] = this.controls.damping;
+    scalars0[2] = this.controls.noiseStrength;
+    scalars0[3] = this.worldHalfWidth;
 
-    scalars1[0] = this.controls.damping;
-    scalars1[1] = this.controls.noiseStrength;
-    scalars1[2] = this.controls.boundaryForce;
-    scalars1[3] = this.worldHalfWidth;
-
-    scalars2[0] = this.worldHalfHeight;
-    scalars2[1] = this.controls.dragRadius;
-    scalars2[2] = 0;
-    scalars2[3] = 0;
+    scalars1[0] = this.worldHalfHeight;
+    scalars1[1] = this.controls.dragRadius;
+    scalars1[2] = this.getMaxSearchRadius();
+    scalars1[3] = 0;
 
     drag[0] = this.dragPosition.x;
     drag[1] = this.dragPosition.y;
@@ -468,6 +501,9 @@ export class EntitySimulation {
     drag[3] = this.dragDelta.y;
 
     enabled.set(this.typeEnabled);
+    attractionRadii.set(this.typeAttractionRadii);
+    repulsionRadii.set(this.typeRepulsionRadii);
+    maxSpeeds.set(this.typeMaxSpeeds);
 
     this.device.queue.writeBuffer(this.simSettingsBuffer, 0, buffer);
   }
@@ -522,11 +558,7 @@ export class EntitySimulation {
   }
 
   private computeGridSpec(): GridSpec {
-    const searchRadius = Math.max(
-      this.controls.interactionRadius,
-      this.controls.repulsionRadius,
-      0.001
-    );
+    const searchRadius = this.getMaxSearchRadius();
     const targetCellSize = searchRadius / TARGET_CELLS_PER_SEARCH_RADIUS;
     const worldWidth = this.worldHalfWidth * 2;
     const worldHeight = this.worldHalfHeight * 2;
@@ -562,11 +594,7 @@ export class EntitySimulation {
     this.gridCellCapacity = gridSpec.cellCapacity;
     this.gridCellWidth = (this.worldHalfWidth * 2) / this.gridColumns;
     this.gridCellHeight = (this.worldHalfHeight * 2) / this.gridRows;
-    const searchRadius = Math.max(
-      this.controls.interactionRadius,
-      this.controls.repulsionRadius,
-      0.001
-    );
+    const searchRadius = this.getMaxSearchRadius();
     this.searchSpanX = Math.max(1, Math.ceil(searchRadius / this.gridCellWidth));
     this.searchSpanY = Math.max(1, Math.ceil(searchRadius / this.gridCellHeight));
 
@@ -695,6 +723,24 @@ export class EntitySimulation {
 
   private consumeDragMotion(): void {
     this.dragDelta = { x: 0, y: 0 };
+  }
+
+  private getMaxSearchRadius(): number {
+    let maxRadius = 0.001;
+
+    for (let typeIndex = 0; typeIndex < this.typeCount; typeIndex += 1) {
+      if (!this.isTypeEnabled(typeIndex)) {
+        continue;
+      }
+
+      maxRadius = Math.max(
+        maxRadius,
+        this.typeAttractionRadii[typeIndex],
+        this.typeRepulsionRadii[typeIndex]
+      );
+    }
+
+    return maxRadius;
   }
 
   private writeRuleBuffers(): void {

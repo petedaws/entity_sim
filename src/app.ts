@@ -21,13 +21,8 @@ export async function boot(): Promise<void> {
     gui.add(simulation.controls, "entityCount", 1, simulation.maxEntityCount, 1)
       .name("activeEntities");
     gui.add(simulation.controls, "timeScale", 0.1, 2, 0.05);
-    gui.add(simulation.controls, "interactionRadius", 0.03, 0.35, 0.01)
-      .name("attractionRadius");
-    gui.add(simulation.controls, "repulsionRadius", 0.005, 0.12, 0.001);
     gui.add(simulation.controls, "damping", 0.9, 0.999, 0.001);
-    gui.add(simulation.controls, "maxSpeed", 0.05, 2.0, 0.01);
     gui.add(simulation.controls, "noiseStrength", 0.0, 0.2, 0.005);
-    gui.add(simulation.controls, "boundaryForce", 0.1, 8.0, 0.1);
     gui.add(simulation.controls, "entityRadius", 0.002, 0.03, 0.001);
     gui.add(simulation.controls, "dragRadius", 0.01, 0.25, 0.005);
     gui.add(

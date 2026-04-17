@@ -13,6 +13,7 @@ struct SimSettings {
   attraction_radii: vec4f,
   repulsion_radii: vec4f,
   max_speeds: vec4f,
+  density_thresholds: vec4f,
 };
 
 @group(0) @binding(0) var<uniform> settings: SimSettings;
@@ -210,6 +211,7 @@ fn simulateGrid(@builtin(global_invocation_id) global_id: vec3u) {
   let interaction_radius = get_type_scalar(settings.attraction_radii, self_type);
   let repulsion_radius = get_type_scalar(settings.repulsion_radii, self_type);
   let max_speed = get_type_scalar(settings.max_speeds, self_type);
+  let density_threshold = get_type_scalar(settings.density_thresholds, self_type);
   let search_radius = max(interaction_radius, repulsion_radius);
   let search_radius_sq = search_radius * search_radius;
   let interaction_radius_sq = interaction_radius * interaction_radius;
@@ -217,6 +219,53 @@ fn simulateGrid(@builtin(global_invocation_id) global_id: vec3u) {
   let search_range_x = i32(ceil(search_radius / cell_extent.x));
   let search_range_y = i32(ceil(search_radius / cell_extent.y));
   let cell = get_cell_coordinates(position);
+
+  var same_type_density: f32 = 0.0;
+  if (density_threshold > 0.0) {
+    for (var offset_y = -search_range_y; offset_y <= search_range_y; offset_y += 1) {
+      let neighbor_y = i32(cell.y) + offset_y;
+      if (neighbor_y < 0 || neighbor_y >= i32(grid_rows)) {
+        continue;
+      }
+
+      for (var offset_x = -search_range_x; offset_x <= search_range_x; offset_x += 1) {
+        let neighbor_x = i32(cell.x) + offset_x;
+        if (neighbor_x < 0 || neighbor_x >= i32(grid_columns)) {
+          continue;
+        }
+
+        let neighbor_cell = vec2u(u32(neighbor_x), u32(neighbor_y));
+        let cell_index = get_cell_index(neighbor_cell);
+        let neighbor_count = min(atomicLoad(&cell_counts[cell_index]), cell_capacity);
+        let cell_base = cell_index * cell_capacity;
+
+        for (var slot = 0u; slot < neighbor_count; slot += 1u) {
+          let other_index = cell_entries[cell_base + slot];
+          if (other_index == index) {
+            continue;
+          }
+
+          let other = input_entities[other_index];
+          if (u32(other.position_type.w) != self_type) {
+            continue;
+          }
+
+          let delta = wrapped_delta(position, other.position_type.xy, bounds);
+          let distance_sq = dot(delta, delta);
+          if (distance_sq < 0.000001 || distance_sq > interaction_radius_sq) {
+            continue;
+          }
+
+          same_type_density += 1.0;
+        }
+      }
+    }
+  }
+
+  var same_type_multiplier: f32 = 1.0;
+  if (density_threshold > 0.0) {
+    same_type_multiplier = clamp(1.0 - same_type_density / density_threshold, -1.0, 1.0);
+  }
 
   for (var offset_y = -search_range_y; offset_y <= search_range_y; offset_y += 1) {
     let neighbor_y = i32(cell.y) + offset_y;
@@ -260,8 +309,11 @@ fn simulateGrid(@builtin(global_invocation_id) global_id: vec3u) {
         let attraction_strength = attraction_matrix[rule_index];
         let repulsion_strength = repulsion_matrix[rule_index];
         if (distance_sq <= interaction_radius_sq) {
-          let attraction_force =
+          var attraction_force =
             attraction_strength / max(distance_sq, min_distance_sq);
+          if (other_type == self_type) {
+            attraction_force *= same_type_multiplier;
+          }
           acceleration += direction * attraction_force;
         }
 

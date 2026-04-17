@@ -2,6 +2,7 @@ import renderShaderSource from "../shaders/render.wgsl?raw";
 import simShaderSource from "../shaders/sim.wgsl?raw";
 import {
   DEFAULT_TYPE_ATTRACTION_RADIUS,
+  DEFAULT_TYPE_DENSITY_THRESHOLD,
   DEFAULT_TYPE_MAX_SPEED,
   DEFAULT_TYPE_REPULSION_RADIUS,
   DEFAULT_CONTROLS,
@@ -16,7 +17,7 @@ import {
   createRandomRuleMatrices
 } from "./rules";
 
-const SIM_SETTINGS_SIZE = 144;
+const SIM_SETTINGS_SIZE = 160;
 const RENDER_SETTINGS_SIZE = 32;
 const MIN_CELL_CAPACITY = 64;
 const CELL_CAPACITY_MULTIPLIER = 6;
@@ -70,6 +71,9 @@ export class EntitySimulation {
   );
   private readonly typeMaxSpeeds = new Float32Array(TYPE_COUNT).fill(
     DEFAULT_TYPE_MAX_SPEED
+  );
+  private readonly typeDensityThresholds = new Float32Array(TYPE_COUNT).fill(
+    DEFAULT_TYPE_DENSITY_THRESHOLD
   );
 
   private activeBufferIndex: 0 | 1 = 0;
@@ -345,6 +349,10 @@ export class EntitySimulation {
     return this.typeMaxSpeeds[typeIndex];
   }
 
+  getTypeDensityThreshold(typeIndex: number): number {
+    return this.typeDensityThresholds[typeIndex];
+  }
+
   isTypeEnabled(typeIndex: number): boolean {
     return this.typeEnabled[typeIndex] !== 0;
   }
@@ -384,6 +392,10 @@ export class EntitySimulation {
 
   setTypeMaxSpeed(typeIndex: number, value: number): void {
     this.typeMaxSpeeds[typeIndex] = Math.max(0.01, value);
+  }
+
+  setTypeDensityThreshold(typeIndex: number, value: number): void {
+    this.typeDensityThresholds[typeIndex] = Math.max(0, value);
   }
 
   viewportToWorld(u: number, v: number): Vector2 {
@@ -474,6 +486,7 @@ export class EntitySimulation {
     const attractionRadii = new Float32Array(buffer, 96, 4);
     const repulsionRadii = new Float32Array(buffer, 112, 4);
     const maxSpeeds = new Float32Array(buffer, 128, 4);
+    const densityThresholds = new Float32Array(buffer, 144, 4);
 
     counts[0] = this.activeEntityCount;
     counts[1] = this.typeCount;
@@ -504,6 +517,7 @@ export class EntitySimulation {
     attractionRadii.set(this.typeAttractionRadii);
     repulsionRadii.set(this.typeRepulsionRadii);
     maxSpeeds.set(this.typeMaxSpeeds);
+    densityThresholds.set(this.typeDensityThresholds);
 
     this.device.queue.writeBuffer(this.simSettingsBuffer, 0, buffer);
   }

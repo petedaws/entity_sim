@@ -15,6 +15,9 @@ const TYPE_REPULSION_RADIUS_STEP = 0.001;
 const TYPE_MAX_SPEED_MIN = 0.05;
 const TYPE_MAX_SPEED_MAX = 2;
 const TYPE_MAX_SPEED_STEP = 0.01;
+const TYPE_DENSITY_MIN = 0;
+const TYPE_DENSITY_MAX = 80;
+const TYPE_DENSITY_STEP = 1;
 
 export interface RulePanelController {
   syncFromSimulation(): void;
@@ -191,6 +194,18 @@ export function createRulePanel(
         formatter: formatSpeedValue,
         onInput: (nextValue) => {
           simulation.setTypeMaxSpeed(activeType, nextValue);
+        }
+      }),
+      createCompactControl({
+        label: "Density",
+        min: TYPE_DENSITY_MIN,
+        max: TYPE_DENSITY_MAX,
+        step: TYPE_DENSITY_STEP,
+        value: simulation.getTypeDensityThreshold(activeType),
+        accentColor: "#ffd27c",
+        formatter: formatDensityValue,
+        onInput: (nextValue) => {
+          simulation.setTypeDensityThreshold(activeType, nextValue);
         }
       })
     );
@@ -386,4 +401,12 @@ function formatRadiusValue(value: number): string {
 
 function formatSpeedValue(value: number): string {
   return value.toFixed(2);
+}
+
+function formatDensityValue(value: number): string {
+  if (value <= 0) {
+    return "off";
+  }
+
+  return value.toFixed(0);
 }

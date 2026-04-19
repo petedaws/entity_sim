@@ -54,14 +54,27 @@ canvas {
   color: rgba(232, 238, 245, 0.8);
 }
 
-.rule-panel {
+.control-stack {
   position: fixed;
-  left: 1rem;
-  bottom: 1rem;
+  top: 0;
+  right: 0;
   z-index: 5;
-  width: min(32rem, calc(100vw - 2rem));
-  max-height: min(28rem, calc(100vh - 8rem));
-  overflow: auto;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 0.5rem;
+  max-height: 100vh;
+  padding: 0.5rem;
+  overflow-y: auto;
+  pointer-events: none;
+}
+
+.control-stack > * {
+  pointer-events: auto;
+}
+
+.rule-panel {
+  width: min(32rem, calc(100vw - 1rem));
   padding: 1rem;
   border: 1px solid rgba(255, 255, 255, 0.08);
   border-radius: 1rem;
@@ -78,7 +91,39 @@ canvas {
   align-items: flex-start;
   justify-content: space-between;
   gap: 1rem;
+  width: 100%;
+  padding: 0;
+  border: none;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
 }
+
+.rule-panel__title-group {
+  flex: 1 1 auto;
+}
+
+.rule-panel__chevron {
+  flex: 0 0 auto;
+  margin-top: 0.1rem;
+  font-size: 0.95rem;
+  line-height: 1;
+  color: rgba(232, 238, 245, 0.7);
+  transition: transform 150ms ease;
+}
+
+.rule-panel.is-collapsed .rule-panel__chevron {
+  transform: rotate(-90deg);
+}
+
+.rule-panel.is-collapsed .rule-panel__actions,
+.rule-panel.is-collapsed .rule-panel__tabs,
+.rule-panel.is-collapsed .rule-panel__body {
+  display: none;
+}
+
 
 .rule-panel__eyebrow {
   margin: 0;
@@ -99,6 +144,7 @@ canvas {
 .rule-panel__actions {
   display: flex;
   gap: 0.5rem;
+  margin-top: 0.75rem;
 }
 
 .rule-panel__button {
@@ -211,7 +257,7 @@ canvas {
 
 .rule-panel__type-settings {
   display: grid;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
+  grid-template-columns: repeat(2, minmax(0, 1fr));
   gap: 0.5rem;
   margin-bottom: 0.7rem;
 }
@@ -294,6 +340,17 @@ canvas {
   color: rgba(232, 238, 245, 0.76);
 }
 
+.rule-panel__value--resettable {
+  cursor: pointer;
+  text-decoration: underline dotted rgba(232, 238, 245, 0.35);
+  text-underline-offset: 2px;
+}
+
+.rule-panel__value--resettable:hover {
+  color: #e8eef5;
+  text-decoration-color: rgba(232, 238, 245, 0.7);
+}
+
 .rule-panel__legend {
   margin: 0.8rem 0 0;
   font-size: 0.82rem;
@@ -302,12 +359,11 @@ canvas {
 
 @media (max-width: 900px) {
   .rule-panel {
-    width: calc(100vw - 2rem);
-    max-height: min(22rem, calc(100vh - 10rem));
+    width: calc(100vw - 1rem);
   }
 
   .rule-panel__header {
-    flex-direction: column;
+    flex-direction: row;
   }
 
   .rule-panel__tabs {

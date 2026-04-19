@@ -10,10 +10,10 @@ struct SimSettings {
   scalars1: vec4f,
   drag: vec4f,
   enabled: vec4u,
-  attraction_radii: vec4f,
-  repulsion_radii: vec4f,
+  search_radii: vec4f,
   max_speeds: vec4f,
   density_thresholds: vec4f,
+  density_radii: vec4f,
 };
 
 @group(0) @binding(0) var<uniform> settings: SimSettings;
@@ -23,6 +23,8 @@ struct SimSettings {
 @group(0) @binding(4) var<storage, read_write> cell_counts: array<atomic<u32>>;
 @group(0) @binding(5) var<storage, read_write> cell_entries: array<u32>;
 @group(0) @binding(6) var<storage, read> repulsion_matrix: array<f32>;
+@group(0) @binding(7) var<storage, read> attraction_radius_matrix: array<f32>;
+@group(0) @binding(8) var<storage, read> repulsion_radius_matrix: array<f32>;
 
 fn hash32(value: u32) -> u32 {
   var x = value;
@@ -208,27 +210,28 @@ fn simulateGrid(@builtin(global_invocation_id) global_id: vec3u) {
   var position = wrap_position(entity.position_type.xy, bounds);
   var velocity = entity.velocity_seed.xy;
   var acceleration = vec2f(0.0);
-  let interaction_radius = get_type_scalar(settings.attraction_radii, self_type);
-  let repulsion_radius = get_type_scalar(settings.repulsion_radii, self_type);
   let max_speed = get_type_scalar(settings.max_speeds, self_type);
   let density_threshold = get_type_scalar(settings.density_thresholds, self_type);
-  let search_radius = max(interaction_radius, repulsion_radius);
+  let search_radius = get_type_scalar(settings.search_radii, self_type);
   let search_radius_sq = search_radius * search_radius;
-  let interaction_radius_sq = interaction_radius * interaction_radius;
-  let repulsion_radius_sq = repulsion_radius * repulsion_radius;
+  let density_probe_radius = get_type_scalar(settings.density_radii, self_type);
+  let density_probe_radius_sq = density_probe_radius * density_probe_radius;
+  let density_probe_area = 3.14159265 * density_probe_radius_sq;
   let search_range_x = i32(ceil(search_radius / cell_extent.x));
   let search_range_y = i32(ceil(search_radius / cell_extent.y));
   let cell = get_cell_coordinates(position);
 
-  var same_type_density: f32 = 0.0;
+  var same_type_count: f32 = 0.0;
   if (density_threshold > 0.0) {
-    for (var offset_y = -search_range_y; offset_y <= search_range_y; offset_y += 1) {
+    let probe_range_x = i32(ceil(density_probe_radius / cell_extent.x));
+    let probe_range_y = i32(ceil(density_probe_radius / cell_extent.y));
+    for (var offset_y = -probe_range_y; offset_y <= probe_range_y; offset_y += 1) {
       let neighbor_y = i32(cell.y) + offset_y;
       if (neighbor_y < 0 || neighbor_y >= i32(grid_rows)) {
         continue;
       }
 
-      for (var offset_x = -search_range_x; offset_x <= search_range_x; offset_x += 1) {
+      for (var offset_x = -probe_range_x; offset_x <= probe_range_x; offset_x += 1) {
         let neighbor_x = i32(cell.x) + offset_x;
         if (neighbor_x < 0 || neighbor_x >= i32(grid_columns)) {
           continue;
@@ -252,11 +255,11 @@ fn simulateGrid(@builtin(global_invocation_id) global_id: vec3u) {
 
           let delta = wrapped_delta(position, other.position_type.xy, bounds);
           let distance_sq = dot(delta, delta);
-          if (distance_sq < 0.000001 || distance_sq > interaction_radius_sq) {
+          if (distance_sq < 0.000001 || distance_sq > density_probe_radius_sq) {
             continue;
           }
 
-          same_type_density += 1.0;
+          same_type_count += 1.0;
         }
       }
     }
@@ -264,7 +267,10 @@ fn simulateGrid(@builtin(global_invocation_id) global_id: vec3u) {
 
   var same_type_multiplier: f32 = 1.0;
   if (density_threshold > 0.0) {
-    same_type_multiplier = clamp(1.0 - same_type_density / density_threshold, -1.0, 1.0);
+    let density_value = same_type_count / density_probe_area;
+    if (density_value > density_threshold) {
+      same_type_multiplier = -1.0;
+    }
   }
 
   for (var offset_y = -search_range_y; offset_y <= search_range_y; offset_y += 1) {
@@ -308,6 +314,10 @@ fn simulateGrid(@builtin(global_invocation_id) global_id: vec3u) {
         let rule_index = self_type * type_count + other_type;
         let attraction_strength = attraction_matrix[rule_index];
         let repulsion_strength = repulsion_matrix[rule_index];
+        let interaction_radius = attraction_radius_matrix[rule_index];
+        let repulsion_radius = repulsion_radius_matrix[rule_index];
+        let interaction_radius_sq = interaction_radius * interaction_radius;
+        let repulsion_radius_sq = repulsion_radius * repulsion_radius;
         if (distance_sq <= interaction_radius_sq) {
           var attraction_force =
             attraction_strength / max(distance_sq, min_distance_sq);

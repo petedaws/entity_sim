@@ -1,11 +1,10 @@
 import renderShaderSource from "../shaders/render.wgsl?raw";
 import simShaderSource from "../shaders/sim.wgsl?raw";
 import {
-  DEFAULT_TYPE_ATTRACTION_RADIUS,
   DEFAULT_TYPE_DENSITY_THRESHOLD,
   DEFAULT_TYPE_MAX_SPEED,
-  DEFAULT_TYPE_REPULSION_RADIUS,
   DEFAULT_CONTROLS,
+  DENSITY_PROBE_RADIUS,
   ENTITY_COUNT,
   ENTITY_STRIDE_FLOATS,
   TYPE_COUNT,
@@ -58,22 +57,24 @@ export class EntitySimulation {
   private readonly renderSettingsBuffer: GPUBuffer;
   private readonly attractionBuffer: GPUBuffer;
   private readonly repulsionBuffer: GPUBuffer;
+  private readonly attractionRadiusBuffer: GPUBuffer;
+  private readonly repulsionRadiusBuffer: GPUBuffer;
   private gridCountsBuffer!: GPUBuffer;
   private gridEntriesBuffer!: GPUBuffer;
   private attractionMatrix: Float32Array;
   private repulsionMatrix: Float32Array;
+  private attractionRadiiMatrix: Float32Array;
+  private repulsionRadiiMatrix: Float32Array;
   private readonly typeEnabled = new Uint32Array(TYPE_COUNT).fill(1);
-  private readonly typeAttractionRadii = new Float32Array(TYPE_COUNT).fill(
-    DEFAULT_TYPE_ATTRACTION_RADIUS
-  );
-  private readonly typeRepulsionRadii = new Float32Array(TYPE_COUNT).fill(
-    DEFAULT_TYPE_REPULSION_RADIUS
-  );
+  private readonly searchRadii = new Float32Array(TYPE_COUNT);
   private readonly typeMaxSpeeds = new Float32Array(TYPE_COUNT).fill(
     DEFAULT_TYPE_MAX_SPEED
   );
   private readonly typeDensityThresholds = new Float32Array(TYPE_COUNT).fill(
     DEFAULT_TYPE_DENSITY_THRESHOLD
+  );
+  private readonly typeDensityRadii = new Float32Array(TYPE_COUNT).fill(
+    DENSITY_PROBE_RADIUS
   );
 
   private activeBufferIndex: 0 | 1 = 0;
@@ -126,9 +127,23 @@ export class EntitySimulation {
       usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST
     });
 
+    this.attractionRadiusBuffer = device.createBuffer({
+      label: "attraction radius matrix",
+      size: TYPE_COUNT * TYPE_COUNT * Float32Array.BYTES_PER_ELEMENT,
+      usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST
+    });
+
+    this.repulsionRadiusBuffer = device.createBuffer({
+      label: "repulsion radius matrix",
+      size: TYPE_COUNT * TYPE_COUNT * Float32Array.BYTES_PER_ELEMENT,
+      usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST
+    });
+
     const defaultRules = createDefaultRuleMatrices(TYPE_COUNT);
     this.attractionMatrix = defaultRules.attraction;
     this.repulsionMatrix = defaultRules.repulsion;
+    this.attractionRadiiMatrix = defaultRules.attractionRadii;
+    this.repulsionRadiiMatrix = defaultRules.repulsionRadii;
 
     this.entityBuffers = [
       this.createEntityBuffer("entities a"),
@@ -319,6 +334,8 @@ export class EntitySimulation {
     const nextRules = createRandomRuleMatrices(this.typeCount);
     this.attractionMatrix = nextRules.attraction;
     this.repulsionMatrix = nextRules.repulsion;
+    this.attractionRadiiMatrix = nextRules.attractionRadii;
+    this.repulsionRadiiMatrix = nextRules.repulsionRadii;
     this.writeRuleBuffers();
   }
 
@@ -326,6 +343,8 @@ export class EntitySimulation {
     const nextRules = createDefaultRuleMatrices(this.typeCount);
     this.attractionMatrix = nextRules.attraction;
     this.repulsionMatrix = nextRules.repulsion;
+    this.attractionRadiiMatrix = nextRules.attractionRadii;
+    this.repulsionRadiiMatrix = nextRules.repulsionRadii;
     this.writeRuleBuffers();
   }
 
@@ -337,12 +356,12 @@ export class EntitySimulation {
     return this.repulsionMatrix[this.getRuleIndex(sourceType, targetType)];
   }
 
-  getTypeAttractionRadius(typeIndex: number): number {
-    return this.typeAttractionRadii[typeIndex];
+  getAttractionRadius(sourceType: number, targetType: number): number {
+    return this.attractionRadiiMatrix[this.getRuleIndex(sourceType, targetType)];
   }
 
-  getTypeRepulsionRadius(typeIndex: number): number {
-    return this.typeRepulsionRadii[typeIndex];
+  getRepulsionRadius(sourceType: number, targetType: number): number {
+    return this.repulsionRadiiMatrix[this.getRuleIndex(sourceType, targetType)];
   }
 
   getTypeMaxSpeed(typeIndex: number): number {
@@ -351,6 +370,10 @@ export class EntitySimulation {
 
   getTypeDensityThreshold(typeIndex: number): number {
     return this.typeDensityThresholds[typeIndex];
+  }
+
+  getTypeDensityRadius(typeIndex: number): number {
+    return this.typeDensityRadii[typeIndex];
   }
 
   isTypeEnabled(typeIndex: number): boolean {
@@ -382,12 +405,32 @@ export class EntitySimulation {
     this.typeEnabled[typeIndex] = enabled ? 1 : 0;
   }
 
-  setTypeAttractionRadius(typeIndex: number, value: number): void {
-    this.typeAttractionRadii[typeIndex] = Math.max(0, value);
+  setAttractionRadius(
+    sourceType: number,
+    targetType: number,
+    value: number
+  ): void {
+    this.attractionRadiiMatrix[this.getRuleIndex(sourceType, targetType)] =
+      Math.max(0, value);
+    this.device.queue.writeBuffer(
+      this.attractionRadiusBuffer,
+      0,
+      this.attractionRadiiMatrix
+    );
   }
 
-  setTypeRepulsionRadius(typeIndex: number, value: number): void {
-    this.typeRepulsionRadii[typeIndex] = Math.max(0, value);
+  setRepulsionRadius(
+    sourceType: number,
+    targetType: number,
+    value: number
+  ): void {
+    this.repulsionRadiiMatrix[this.getRuleIndex(sourceType, targetType)] =
+      Math.max(0, value);
+    this.device.queue.writeBuffer(
+      this.repulsionRadiusBuffer,
+      0,
+      this.repulsionRadiiMatrix
+    );
   }
 
   setTypeMaxSpeed(typeIndex: number, value: number): void {
@@ -396,6 +439,10 @@ export class EntitySimulation {
 
   setTypeDensityThreshold(typeIndex: number, value: number): void {
     this.typeDensityThresholds[typeIndex] = Math.max(0, value);
+  }
+
+  setTypeDensityRadius(typeIndex: number, value: number): void {
+    this.typeDensityRadii[typeIndex] = Math.max(0.001, value);
   }
 
   viewportToWorld(u: number, v: number): Vector2 {
@@ -476,6 +523,8 @@ export class EntitySimulation {
   }
 
   private writeSimSettings(deltaSeconds: number): void {
+    this.refreshSearchRadii();
+
     const buffer = new ArrayBuffer(SIM_SETTINGS_SIZE);
     const counts = new Uint32Array(buffer, 0, 4);
     const grid = new Uint32Array(buffer, 16, 4);
@@ -483,10 +532,10 @@ export class EntitySimulation {
     const scalars1 = new Float32Array(buffer, 48, 4);
     const drag = new Float32Array(buffer, 64, 4);
     const enabled = new Uint32Array(buffer, 80, 4);
-    const attractionRadii = new Float32Array(buffer, 96, 4);
-    const repulsionRadii = new Float32Array(buffer, 112, 4);
-    const maxSpeeds = new Float32Array(buffer, 128, 4);
-    const densityThresholds = new Float32Array(buffer, 144, 4);
+    const searchRadii = new Float32Array(buffer, 96, 4);
+    const maxSpeeds = new Float32Array(buffer, 112, 4);
+    const densityThresholds = new Float32Array(buffer, 128, 4);
+    const densityRadii = new Float32Array(buffer, 144, 4);
 
     counts[0] = this.activeEntityCount;
     counts[1] = this.typeCount;
@@ -514,10 +563,10 @@ export class EntitySimulation {
     drag[3] = this.dragDelta.y;
 
     enabled.set(this.typeEnabled);
-    attractionRadii.set(this.typeAttractionRadii);
-    repulsionRadii.set(this.typeRepulsionRadii);
+    searchRadii.set(this.searchRadii);
     maxSpeeds.set(this.typeMaxSpeeds);
     densityThresholds.set(this.typeDensityThresholds);
+    densityRadii.set(this.typeDensityRadii);
 
     this.device.queue.writeBuffer(this.simSettingsBuffer, 0, buffer);
   }
@@ -670,7 +719,9 @@ export class EntitySimulation {
           { binding: 3, resource: { buffer: this.attractionBuffer } },
           { binding: 4, resource: { buffer: this.gridCountsBuffer } },
           { binding: 5, resource: { buffer: this.gridEntriesBuffer } },
-          { binding: 6, resource: { buffer: this.repulsionBuffer } }
+          { binding: 6, resource: { buffer: this.repulsionBuffer } },
+          { binding: 7, resource: { buffer: this.attractionRadiusBuffer } },
+          { binding: 8, resource: { buffer: this.repulsionRadiusBuffer } }
         ]
       }),
       this.device.createBindGroup({
@@ -683,7 +734,9 @@ export class EntitySimulation {
           { binding: 3, resource: { buffer: this.attractionBuffer } },
           { binding: 4, resource: { buffer: this.gridCountsBuffer } },
           { binding: 5, resource: { buffer: this.gridEntriesBuffer } },
-          { binding: 6, resource: { buffer: this.repulsionBuffer } }
+          { binding: 6, resource: { buffer: this.repulsionBuffer } },
+          { binding: 7, resource: { buffer: this.attractionRadiusBuffer } },
+          { binding: 8, resource: { buffer: this.repulsionRadiusBuffer } }
         ]
       })
     ];
@@ -739,26 +792,53 @@ export class EntitySimulation {
     this.dragDelta = { x: 0, y: 0 };
   }
 
-  private getMaxSearchRadius(): number {
-    let maxRadius = 0.001;
+  private refreshSearchRadii(): void {
+    for (let source = 0; source < this.typeCount; source += 1) {
+      let maxRadius = 0.001;
+      if (this.isTypeEnabled(source)) {
+        for (let target = 0; target < this.typeCount; target += 1) {
+          if (!this.isTypeEnabled(target)) {
+            continue;
+          }
+          const index = source * this.typeCount + target;
+          maxRadius = Math.max(
+            maxRadius,
+            this.attractionRadiiMatrix[index],
+            this.repulsionRadiiMatrix[index]
+          );
+        }
+        if (this.typeDensityThresholds[source] > 0) {
+          maxRadius = Math.max(maxRadius, this.typeDensityRadii[source]);
+        }
+      }
+      this.searchRadii[source] = maxRadius;
+    }
+  }
 
-    for (let typeIndex = 0; typeIndex < this.typeCount; typeIndex += 1) {
-      if (!this.isTypeEnabled(typeIndex)) {
+  private getMaxSearchRadius(): number {
+    this.refreshSearchRadii();
+    let maxRadius = 0.001;
+    for (let source = 0; source < this.typeCount; source += 1) {
+      if (!this.isTypeEnabled(source)) {
         continue;
       }
-
-      maxRadius = Math.max(
-        maxRadius,
-        this.typeAttractionRadii[typeIndex],
-        this.typeRepulsionRadii[typeIndex]
-      );
+      maxRadius = Math.max(maxRadius, this.searchRadii[source]);
     }
-
     return maxRadius;
   }
 
   private writeRuleBuffers(): void {
     this.device.queue.writeBuffer(this.attractionBuffer, 0, this.attractionMatrix);
     this.device.queue.writeBuffer(this.repulsionBuffer, 0, this.repulsionMatrix);
+    this.device.queue.writeBuffer(
+      this.attractionRadiusBuffer,
+      0,
+      this.attractionRadiiMatrix
+    );
+    this.device.queue.writeBuffer(
+      this.repulsionRadiusBuffer,
+      0,
+      this.repulsionRadiiMatrix
+    );
   }
 }

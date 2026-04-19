@@ -14,9 +14,12 @@ export async function boot(): Promise<void> {
   try {
     const gpu = await createGpuContext(canvas);
     const simulation = new EntitySimulation(gpu.device, gpu.context, gpu.format);
-    createRulePanel(simulation);
 
-    const gui = new GUI({ title: "entity sim" });
+    const controlStack = document.createElement("div");
+    controlStack.className = "control-stack";
+    document.body.append(controlStack);
+
+    const gui = new GUI({ container: controlStack, title: "entity sim" });
     gui.add(simulation.controls, "paused");
     gui.add(simulation.controls, "entityCount", 1, simulation.maxEntityCount, 1)
       .name("activeEntities");
@@ -31,6 +34,8 @@ export async function boot(): Promise<void> {
       },
       "resetEntities"
     );
+
+    createRulePanel(simulation, controlStack);
 
     const resize = (): void => {
       const dpr = window.devicePixelRatio || 1;

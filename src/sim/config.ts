@@ -4,8 +4,9 @@ export const WORKGROUP_SIZE = 256;
 export const ENTITY_STRIDE_FLOATS = 8;
 export const DEFAULT_TYPE_ATTRACTION_RADIUS = 0.16;
 export const DEFAULT_TYPE_REPULSION_RADIUS = 0.028;
-export const DEFAULT_TYPE_MAX_SPEED = 0.55;
+export const DEFAULT_TYPE_MAX_SPEED = 0.05;
 export const DEFAULT_TYPE_DENSITY_THRESHOLD = 0;
+export const DENSITY_PROBE_RADIUS = 0.08;
 
 export interface SimulationControls {
   paused: boolean;

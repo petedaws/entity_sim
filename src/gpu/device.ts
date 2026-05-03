@@ -8,12 +8,26 @@ export async function createGpuContext(
   canvas: HTMLCanvasElement
 ): Promise<GpuContext> {
   if (!("gpu" in navigator)) {
-    throw new Error("WebGPU is not available in this browser.");
+    const hints: string[] = [];
+
+    if (!window.isSecureContext) {
+      hints.push(
+        "This page is not in a secure context. Open it from http://localhost or https."
+      );
+    }
+
+    hints.push("Use a current Chrome, Edge, or Safari Technology Preview build.");
+    hints.push("Make sure hardware acceleration is enabled.");
+    hints.push("If disabled by policy/flags, re-enable WebGPU in browser settings.");
+
+    throw new Error(`WebGPU is not available in this browser. ${hints.join(" ")}`);
   }
 
   const adapter = await navigator.gpu.requestAdapter();
   if (!adapter) {
-    throw new Error("No compatible GPU adapter was found.");
+    throw new Error(
+      "No compatible WebGPU adapter was found. WebGL can still work on systems where WebGPU is blocked by driver/browser policy, outdated GPU drivers, or unsupported backend configuration."
+    );
   }
 
   const device = await adapter.requestDevice();

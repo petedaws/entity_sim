@@ -4,3 +4,4 @@ dist/
 .vite.stdout.log
 .vite.stderr.log
 .secrets/
+.cert/
